@@ -220,6 +220,19 @@ impl KvStore {
             }
         }
 
+        // Filter out the `None` values, aka the deleted keys
+        let map = map
+            .into_iter()
+            .map(|(ns, kvs)| {
+                (
+                    ns,
+                    kvs.into_iter()
+                        .filter(|(_, kv)| kv.value.is_some())
+                        .collect(),
+                )
+            })
+            .collect();
+
         Ok(map)
     }
 
