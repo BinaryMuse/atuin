@@ -2,7 +2,7 @@
 // Multiple stores of multiple types are all stored in one chonky table (for now), and we just index
 // by tag/host
 
-use async_stream::stream;
+use futures::stream::unfold;
 use std::str::FromStr;
 use std::{path::Path, time::Duration};
 
@@ -194,7 +194,7 @@ impl Store for SqliteStore {
         tag: &str,
         limit: u64,
     ) -> impl Stream<Item = Vec<Record<EncryptedData>>> {
-        let mut pager = SqliteTagPager::new(
+        let pager = SqliteTagPager::new(
             &self.pool,
             Self::query_row,
             tag.to_string(),
@@ -202,11 +202,13 @@ impl Store for SqliteStore {
             PagingDirection::Forward,
         );
 
-        stream! {
-            while let Some(page) = pager.next().await {
-                yield page;
+        unfold(pager, |mut pager| async move {
+            let page = pager.next().await;
+            match page {
+                Some(page) => Some((page, pager)),
+                None => None,
             }
-        }
+        })
     }
 
     async fn pages_tag_rev(
@@ -214,7 +216,7 @@ impl Store for SqliteStore {
         tag: &str,
         limit: u64,
     ) -> impl Stream<Item = Vec<Record<EncryptedData>>> {
-        let mut pager = SqliteTagPager::new(
+        let pager = SqliteTagPager::new(
             &self.pool,
             Self::query_row,
             tag.to_string(),
@@ -222,11 +224,13 @@ impl Store for SqliteStore {
             PagingDirection::Backward,
         );
 
-        stream! {
-            while let Some(page) = pager.next().await {
-                yield page;
+        unfold(pager, |mut pager| async move {
+            let page = pager.next().await;
+            match page {
+                Some(page) => Some((page, pager)),
+                None => None,
             }
-        }
+        })
     }
 
     async fn len_all(&self) -> Result<u64> {
