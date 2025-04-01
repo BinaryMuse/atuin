@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 
-use atuin_common::record::{DecryptedData, Host, HostId};
+use atuin_common::record::{DecryptedData, EncryptedData, Host, HostId, Record};
 use eyre::{Result, bail, ensure, eyre};
+use futures::{StreamExt, pin_mut};
 use serde::Deserialize;
 
 use crate::record::encryption::PASETO_V4;
@@ -175,18 +176,48 @@ impl KvStore {
         namespace: &str,
         key: &str,
     ) -> Result<Option<KvRecord>> {
-        // TODO: don't rebuild every time...
-        let map = self.build_kv(store, encryption_key).await?;
+        let pages = store.pages_tag_rev(KV_TAG, 100).await;
+        pin_mut!(pages);
 
-        let res = map.get(namespace);
+        while let Some(page) = pages.next().await {
+            let map = self.build_kv_page(encryption_key, page).await?;
 
-        if let Some(ns) = res {
-            let value = ns.get(key);
+            let res = map.get(namespace);
 
-            Ok(value.cloned())
-        } else {
-            Ok(None)
+            if let Some(ns) = res {
+                let value = ns.get(key);
+                if let Some(value) = value {
+                    return Ok(Some(value.clone()));
+                }
+            }
         }
+
+        Ok(None)
+    }
+
+    pub async fn build_kv_page(
+        &self,
+        encryption_key: &[u8; 32],
+        page: Vec<Record<EncryptedData>>,
+    ) -> Result<BTreeMap<String, BTreeMap<String, KvRecord>>> {
+        let mut map = BTreeMap::new();
+
+        for record in page.into_iter().rev() {
+            let decrypted = match record.version.as_str() {
+                "v0" | KV_VERSION => record.decrypt::<PASETO_V4>(encryption_key)?,
+                version => bail!("unknown version {version:?}"),
+            };
+
+            let kv = KvRecord::deserialize(&decrypted.data, &decrypted.version)?;
+
+            let ns = map
+                .entry(kv.namespace.clone())
+                .or_insert_with(BTreeMap::new);
+
+            ns.insert(kv.key.clone(), kv);
+        }
+
+        Ok(map)
     }
 
     // Build a kv map out of the linked list kv store
@@ -356,6 +387,82 @@ mod tests {
                 key: String::from("deleted"),
                 value: None
             }
+        );
+    }
+
+    #[tokio::test]
+    async fn large_dataset() {
+        let mut store = SqliteStore::new(":memory:", test_local_timeout())
+            .await
+            .unwrap();
+
+        let kv = KvStore::new();
+        let key: [u8; 32] = XSalsa20Poly1305::generate_key(&mut OsRng).into();
+        let host_id = atuin_common::record::HostId(atuin_common::utils::uuid_v7());
+
+        kv.set(&mut store, &key, host_id, "test-kv", "foo", Some("bar"))
+            .await
+            .unwrap();
+
+        for i in 0..600 {
+            kv.set(
+                &mut store,
+                &key,
+                host_id,
+                "test-kv",
+                &i.to_string(),
+                Some(&i.to_string()),
+            )
+            .await
+            .unwrap();
+        }
+
+        kv.set(&mut store, &key, host_id, "test-kv", "555", None)
+            .await
+            .unwrap();
+
+        for i in 600..1000 {
+            kv.set(
+                &mut store,
+                &key,
+                host_id,
+                "test-kv",
+                &i.to_string(),
+                Some(&i.to_string()),
+            )
+            .await
+            .unwrap();
+        }
+
+        let res_50 = kv.get(&store, &key, "test-kv", "50").await.unwrap();
+        let res_555 = kv.get(&store, &key, "test-kv", "555").await.unwrap();
+        let res_999 = kv.get(&store, &key, "test-kv", "999").await.unwrap();
+
+        assert_eq!(
+            res_555,
+            Some(KvRecord {
+                namespace: String::from("test-kv"),
+                key: String::from("555"),
+                value: None
+            })
+        );
+
+        assert_eq!(
+            res_50,
+            Some(KvRecord {
+                namespace: String::from("test-kv"),
+                key: String::from("50"),
+                value: Some(String::from("50"))
+            })
+        );
+
+        assert_eq!(
+            res_999,
+            Some(KvRecord {
+                namespace: String::from("test-kv"),
+                key: String::from("999"),
+                value: Some(String::from("999"))
+            })
         );
     }
 }

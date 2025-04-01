@@ -2,6 +2,7 @@
 // Multiple stores of multiple types are all stored in one chonky table (for now), and we just index
 // by tag/host
 
+use async_stream::stream;
 use std::str::FromStr;
 use std::{path::Path, time::Duration};
 
@@ -9,6 +10,7 @@ use async_trait::async_trait;
 use eyre::{Result, eyre};
 use fs_err as fs;
 
+use futures::Stream;
 use sqlx::{
     Row,
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteRow},
@@ -93,7 +95,7 @@ impl SqliteStore {
         Ok(())
     }
 
-    fn query_row(row: SqliteRow) -> Record<EncryptedData> {
+    pub fn query_row(row: SqliteRow) -> Record<EncryptedData> {
         let idx: i64 = row.get("idx");
         let timestamp: i64 = row.get("timestamp");
 
@@ -185,6 +187,46 @@ impl Store for SqliteStore {
 
     async fn first(&self, host: HostId, tag: &str) -> Result<Option<Record<EncryptedData>>> {
         self.idx(host, tag, 0).await
+    }
+
+    async fn pages_tag(
+        &self,
+        tag: &str,
+        limit: u64,
+    ) -> impl Stream<Item = Vec<Record<EncryptedData>>> {
+        let mut pager = SqliteTagPager::new(
+            &self.pool,
+            Self::query_row,
+            tag.to_string(),
+            limit,
+            PagingDirection::Forward,
+        );
+
+        stream! {
+            while let Some(page) = pager.next().await {
+                yield page;
+            }
+        }
+    }
+
+    async fn pages_tag_rev(
+        &self,
+        tag: &str,
+        limit: u64,
+    ) -> impl Stream<Item = Vec<Record<EncryptedData>>> {
+        let mut pager = SqliteTagPager::new(
+            &self.pool,
+            Self::query_row,
+            tag.to_string(),
+            limit,
+            PagingDirection::Backward,
+        );
+
+        stream! {
+            while let Some(page) = pager.next().await {
+                yield page;
+            }
+        }
     }
 
     async fn len_all(&self) -> Result<u64> {
@@ -369,12 +411,97 @@ impl Store for SqliteStore {
     }
 }
 
+enum PagingDirection {
+    Forward,
+    Backward,
+}
+
+struct SqliteTagPager<'a> {
+    pool: &'a SqlitePool,
+    mapper: fn(SqliteRow) -> Record<EncryptedData>,
+    tag: String,
+    limit: u64,
+    last: Option<RecordIdx>,
+    direction: PagingDirection,
+}
+
+impl<'a> SqliteTagPager<'a> {
+    fn new(
+        pool: &'a SqlitePool,
+        mapper: fn(SqliteRow) -> Record<EncryptedData>,
+        tag: String,
+        limit: u64,
+        direction: PagingDirection,
+    ) -> Self {
+        Self {
+            pool,
+            mapper,
+            tag,
+            limit,
+            last: None,
+            direction,
+        }
+    }
+
+    async fn next(&mut self) -> Option<Vec<Record<EncryptedData>>> {
+        use PagingDirection::*;
+
+        let query = match self.last {
+            Some(last) => match self.direction {
+                Forward => {
+                    let qry =
+                        "select * from store where tag = ?1 and idx > ?2 order by idx asc limit ?3";
+                    sqlx::query(qry)
+                        .bind(self.tag.as_str())
+                        .bind(last as i64)
+                        .bind(self.limit as i64)
+                }
+                Backward => {
+                    let qry = "select * from store where tag = ?1 and idx < ?2 order by idx desc limit ?3";
+                    sqlx::query(qry)
+                        .bind(self.tag.as_str())
+                        .bind(last as i64)
+                        .bind(self.limit as i64)
+                }
+            },
+            None => match self.direction {
+                Forward => {
+                    sqlx::query("select * from store where tag = ?1 order by idx asc limit ?2")
+                        .bind(self.tag.as_str())
+                        .bind(self.limit as i64)
+                }
+                Backward => {
+                    sqlx::query("select * from store where tag = ?1 order by idx desc limit ?2")
+                        .bind(self.tag.as_str())
+                        .bind(self.limit as i64)
+                }
+            },
+        };
+
+        let res = query.map(self.mapper).fetch_all(self.pool).await;
+
+        match res {
+            Ok(res) => {
+                if res.is_empty() {
+                    return None;
+                }
+                let last = res.last().unwrap().idx;
+                self.last = Some(last);
+
+                Some(res)
+            }
+            Err(_) => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use atuin_common::{
         record::{DecryptedData, EncryptedData, Host, HostId, Record},
         utils::uuid_v7,
     };
+    use futures::{StreamExt, pin_mut};
 
     use crate::{
         encryption::generate_encoded_key,
@@ -468,6 +595,72 @@ mod tests {
             first.unwrap().id,
             record.id,
             "expected to get back the same record that was inserted"
+        );
+    }
+
+    #[tokio::test]
+    async fn pages_tag() {
+        let db = SqliteStore::new(":memory:", test_local_timeout())
+            .await
+            .unwrap();
+
+        let mut tail = test_record();
+        let first_id = tail.id;
+        db.push(&tail).await.expect("failed to push record");
+
+        let mut last_id = first_id;
+        for _ in 1..100 {
+            tail = tail.append(vec![1, 2, 3, 4]).encrypt::<PASETO_V4>(&[0; 32]);
+            db.push(&tail).await.unwrap();
+            last_id = tail.id;
+        }
+
+        let pages = db.pages_tag(tail.tag.as_str(), 10).await;
+        pin_mut!(pages);
+
+        let pages = pages.collect::<Vec<_>>().await;
+
+        assert_eq!(pages.len(), 10, "expected 10 pages");
+        assert_eq!(
+            pages[0][0].id, first_id,
+            "expected the first record in the first page"
+        );
+        assert_eq!(
+            pages[9][9].id, last_id,
+            "expected the last record in the last page"
+        );
+    }
+
+    #[tokio::test]
+    async fn pages_tag_rev() {
+        let db = SqliteStore::new(":memory:", test_local_timeout())
+            .await
+            .unwrap();
+
+        let mut tail = test_record();
+        let first_id = tail.id;
+        db.push(&tail).await.expect("failed to push record");
+
+        let mut last_id = first_id;
+        for _ in 1..100 {
+            tail = tail.append(vec![1, 2, 3, 4]).encrypt::<PASETO_V4>(&[0; 32]);
+            db.push(&tail).await.unwrap();
+            last_id = tail.id;
+        }
+
+        let pages = db.pages_tag_rev(tail.tag.as_str(), 10).await;
+        pin_mut!(pages);
+
+        let pages = pages.collect::<Vec<_>>().await;
+
+        assert_eq!(pages.len(), 10, "expected 10 pages");
+        assert_eq!(
+            pages[0][0].id, last_id,
+            "expected the first record in the first page"
+        );
+        assert_eq!(
+            pages[9][9].id, first_id,
+            "expected the last record in the last page"
         );
     }
 

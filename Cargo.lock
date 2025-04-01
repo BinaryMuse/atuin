@@ -268,6 +268,7 @@ dependencies = [
 name = "atuin-client"
 version = "18.5.0-beta.1"
 dependencies = [
+ "async-stream",
  "async-trait",
  "atuin-common",
  "base64 0.22.1",

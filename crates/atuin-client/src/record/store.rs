@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use eyre::Result;
 
 use atuin_common::record::{EncryptedData, HostId, Record, RecordId, RecordIdx, RecordStatus};
+use futures::Stream;
 
 /// A record store stores records
 /// In more detail - we tend to need to process this into _another_ format to actually query it.
@@ -31,6 +32,17 @@ pub trait Store {
 
     async fn last(&self, host: HostId, tag: &str) -> Result<Option<Record<EncryptedData>>>;
     async fn first(&self, host: HostId, tag: &str) -> Result<Option<Record<EncryptedData>>>;
+
+    async fn pages_tag(
+        &self,
+        tag: &str,
+        limit: u64,
+    ) -> impl Stream<Item = Vec<Record<EncryptedData>>>;
+    async fn pages_tag_rev(
+        &self,
+        tag: &str,
+        limit: u64,
+    ) -> impl Stream<Item = Vec<Record<EncryptedData>>>;
 
     async fn re_encrypt(&self, old_key: &[u8; 32], new_key: &[u8; 32]) -> Result<()>;
     async fn verify(&self, key: &[u8; 32]) -> Result<()>;
