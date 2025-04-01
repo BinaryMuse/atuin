@@ -180,18 +180,11 @@ impl KvStore {
         pin_mut!(pages);
 
         while let Some(page) = pages.next().await {
-            // Since we are paginating in reverse, SQLite gives us the entries
-            // in reverse order as well, so we need to reverse the iterator.
-            let map = self
-                .build_kv_page(encryption_key, page.into_iter().rev())
-                .await?;
+            for record in page {
+                let kv = self.decrypt_record(encryption_key, record).await?;
 
-            let res = map.get(namespace);
-
-            if let Some(ns) = res {
-                let value = ns.get(key);
-                if let Some(value) = value {
-                    return Ok(Some(value.clone()));
+                if kv.namespace == namespace && kv.key == key {
+                    return Ok(Some(kv));
                 }
             }
         }
@@ -199,29 +192,19 @@ impl KvStore {
         Ok(None)
     }
 
-    pub async fn build_kv_page(
+    async fn decrypt_record(
         &self,
         encryption_key: &[u8; 32],
-        page: impl Iterator<Item = Record<EncryptedData>>,
-    ) -> Result<BTreeMap<String, BTreeMap<String, KvRecord>>> {
-        let mut map = BTreeMap::new();
+        record: Record<EncryptedData>,
+    ) -> Result<KvRecord> {
+        let decrypted = match record.version.as_str() {
+            "v0" | KV_VERSION => record.decrypt::<PASETO_V4>(encryption_key)?,
+            version => bail!("unknown version {version:?}"),
+        };
 
-        for record in page {
-            let decrypted = match record.version.as_str() {
-                "v0" | KV_VERSION => record.decrypt::<PASETO_V4>(encryption_key)?,
-                version => bail!("unknown version {version:?}"),
-            };
+        let kv = KvRecord::deserialize(&decrypted.data, &decrypted.version)?;
 
-            let kv = KvRecord::deserialize(&decrypted.data, &decrypted.version)?;
-
-            let ns = map
-                .entry(kv.namespace.clone())
-                .or_insert_with(BTreeMap::new);
-
-            ns.insert(kv.key.clone(), kv);
-        }
-
-        Ok(map)
+        Ok(kv)
     }
 
     // Build a kv map out of the linked list kv store
