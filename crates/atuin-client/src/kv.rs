@@ -192,6 +192,37 @@ impl KvStore {
         Ok(None)
     }
 
+    pub async fn list(
+        &self,
+        store: &impl Store,
+        encryption_key: &[u8; 32],
+        namespace: &str,
+        all_namespaces: bool,
+    ) -> Result<BTreeMap<String, BTreeMap<String, KvRecord>>> {
+        let mut map = BTreeMap::new();
+
+        let pages = store.tag_pages_rev(KV_TAG, 100);
+        pin_mut!(pages);
+
+        while let Some(page) = pages.next().await {
+            for record in page {
+                let kv = self.decrypt_record(encryption_key, record).await?;
+
+                if all_namespaces || kv.namespace == namespace {
+                    let ns = map
+                        .entry(kv.namespace.clone())
+                        .or_insert_with(BTreeMap::new);
+
+                    if !ns.contains_key(&kv.key) {
+                        ns.insert(kv.key.clone(), kv);
+                    }
+                }
+            }
+        }
+
+        Ok(map)
+    }
+
     async fn decrypt_record(
         &self,
         encryption_key: &[u8; 32],
@@ -205,43 +236,6 @@ impl KvStore {
         let kv = KvRecord::deserialize(&decrypted.data, &decrypted.version)?;
 
         Ok(kv)
-    }
-
-    // Build a kv map out of the linked list kv store
-    // Map is Namespace -> Key -> Value
-    // TODO(ellie): "cache" this into a real kv structure, which we can
-    // use as a write-through cache to avoid constant rebuilds.
-    pub async fn build_kv(
-        &self,
-        store: &impl Store,
-        encryption_key: &[u8; 32],
-    ) -> Result<BTreeMap<String, BTreeMap<String, KvRecord>>> {
-        let mut map = BTreeMap::new();
-
-        // TODO: maybe don't load the entire tag into memory to build the kv
-        // we can be smart about it and only load values since the last build
-        // or, iterate/paginate
-        let tagged = store.all_tagged(KV_TAG).await?;
-
-        // iterate through all tags and play each KV record at a time
-        // this is "last write wins"
-        // probably good enough for now, but revisit in future
-        for record in tagged {
-            let decrypted = match record.version.as_str() {
-                "v0" | KV_VERSION => record.decrypt::<PASETO_V4>(encryption_key)?,
-                version => bail!("unknown version {version:?}"),
-            };
-
-            let kv = KvRecord::deserialize(&decrypted.data, &decrypted.version)?;
-
-            let ns = map
-                .entry(kv.namespace.clone())
-                .or_insert_with(BTreeMap::new);
-
-            ns.insert(kv.key.clone(), kv);
-        }
-
-        Ok(map)
     }
 }
 
@@ -304,77 +298,6 @@ mod tests {
         let decoded = KvRecord::deserialize(&DecryptedData(snapshot), "v0").unwrap();
 
         assert_eq!(decoded, kv);
-    }
-
-    #[tokio::test]
-    async fn build_kv() {
-        let mut store = SqliteStore::new(":memory:", test_local_timeout())
-            .await
-            .unwrap();
-        let kv = KvStore::new();
-        let key: [u8; 32] = XSalsa20Poly1305::generate_key(&mut OsRng).into();
-        let host_id = atuin_common::record::HostId(atuin_common::utils::uuid_v7());
-
-        kv.set(&mut store, &key, host_id, "test-kv", "foo", Some("bar"))
-            .await
-            .unwrap();
-
-        kv.set(&mut store, &key, host_id, "test-kv", "1", Some("2"))
-            .await
-            .unwrap();
-
-        kv.set(
-            &mut store,
-            &key,
-            host_id,
-            "test-kv",
-            "deleted",
-            Some("hello"),
-        )
-        .await
-        .unwrap();
-
-        kv.set(&mut store, &key, host_id, "test-kv", "deleted", None)
-            .await
-            .unwrap();
-
-        let map = kv.build_kv(&store, &key).await.unwrap();
-
-        assert_eq!(
-            *map.get("test-kv")
-                .expect("map namespace not set")
-                .get("foo")
-                .expect("map key not set"),
-            KvRecord {
-                namespace: String::from("test-kv"),
-                key: String::from("foo"),
-                value: Some(String::from("bar"))
-            }
-        );
-
-        assert_eq!(
-            *map.get("test-kv")
-                .expect("map namespace not set")
-                .get("1")
-                .expect("map key not set"),
-            KvRecord {
-                namespace: String::from("test-kv"),
-                key: String::from("1"),
-                value: Some(String::from("2"))
-            }
-        );
-
-        assert_eq!(
-            *map.get("test-kv")
-                .expect("map namespace not set")
-                .get("deleted")
-                .expect("map key not set"),
-            KvRecord {
-                namespace: String::from("test-kv"),
-                key: String::from("deleted"),
-                value: None
-            }
-        );
     }
 
     #[tokio::test]

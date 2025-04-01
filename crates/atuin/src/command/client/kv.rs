@@ -87,7 +87,9 @@ impl Cmd {
                 all_namespaces,
             } => {
                 // TODO: don't rebuild this every time lol
-                let map = kv_store.build_kv(store, &encryption_key).await?;
+                let map = kv_store
+                    .list(store, &encryption_key, namespace, *all_namespaces)
+                    .await?;
 
                 // slower, but sorting is probably useful
                 if *all_namespaces {
