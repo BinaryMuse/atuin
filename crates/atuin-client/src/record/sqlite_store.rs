@@ -125,6 +125,23 @@ impl SqliteStore {
 
         Ok(res)
     }
+
+    fn paginate_tags(
+        &self,
+        tag: &str,
+        limit: u64,
+        order: PagingDirection,
+    ) -> impl Stream<Item = Vec<Record<EncryptedData>>> {
+        let pager = SqliteTagPager::new(&self.pool, Self::query_row, tag.to_string(), limit, order);
+
+        unfold(pager, |mut pager| async move {
+            let page = pager.next().await;
+            match page {
+                Some(page) => Some((page, pager)),
+                None => None,
+            }
+        })
+    }
 }
 
 #[async_trait]
@@ -190,21 +207,7 @@ impl Store for SqliteStore {
     }
 
     fn pages_tag(&self, tag: &str, limit: u64) -> impl Stream<Item = Vec<Record<EncryptedData>>> {
-        let pager = SqliteTagPager::new(
-            &self.pool,
-            Self::query_row,
-            tag.to_string(),
-            limit,
-            PagingDirection::Forward,
-        );
-
-        unfold(pager, |mut pager| async move {
-            let page = pager.next().await;
-            match page {
-                Some(page) => Some((page, pager)),
-                None => None,
-            }
-        })
+        self.paginate_tags(tag, limit, PagingDirection::Forward)
     }
 
     fn pages_tag_rev(
@@ -212,21 +215,7 @@ impl Store for SqliteStore {
         tag: &str,
         limit: u64,
     ) -> impl Stream<Item = Vec<Record<EncryptedData>>> {
-        let pager = SqliteTagPager::new(
-            &self.pool,
-            Self::query_row,
-            tag.to_string(),
-            limit,
-            PagingDirection::Backward,
-        );
-
-        unfold(pager, |mut pager| async move {
-            let page = pager.next().await;
-            match page {
-                Some(page) => Some((page, pager)),
-                None => None,
-            }
-        })
+        self.paginate_tags(tag, limit, PagingDirection::Backward)
     }
 
     async fn len_all(&self) -> Result<u64> {
