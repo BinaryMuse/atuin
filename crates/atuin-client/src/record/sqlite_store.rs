@@ -410,7 +410,7 @@ struct SqliteTagPager<'a> {
     mapper: fn(SqliteRow) -> Record<EncryptedData>,
     tag: String,
     limit: u64,
-    last: Option<RecordIdx>,
+    last: Option<RecordId>,
     direction: PagingDirection,
 }
 
@@ -438,32 +438,31 @@ impl<'a> SqliteTagPager<'a> {
         let query = match self.last {
             Some(last) => match self.direction {
                 Forward => {
-                    let qry =
-                        "select * from store where tag = ?1 and idx > ?2 order by idx asc limit ?3";
+                    let qry = "select * from store where tag = ?1 and id > ?2 order by timestamp asc limit ?3";
                     sqlx::query(qry)
                         .bind(self.tag.as_str())
-                        .bind(last as i64)
+                        .bind(last.0.as_hyphenated().to_string())
                         .bind(self.limit as i64)
                 }
                 Backward => {
-                    let qry = "select * from store where tag = ?1 and idx < ?2 order by idx desc limit ?3";
+                    let qry = "select * from store where tag = ?1 and id < ?2 order by timestamp desc limit ?3";
                     sqlx::query(qry)
                         .bind(self.tag.as_str())
-                        .bind(last as i64)
+                        .bind(last.0.as_hyphenated().to_string())
                         .bind(self.limit as i64)
                 }
             },
             None => match self.direction {
-                Forward => {
-                    sqlx::query("select * from store where tag = ?1 order by idx asc limit ?2")
-                        .bind(self.tag.as_str())
-                        .bind(self.limit as i64)
-                }
-                Backward => {
-                    sqlx::query("select * from store where tag = ?1 order by idx desc limit ?2")
-                        .bind(self.tag.as_str())
-                        .bind(self.limit as i64)
-                }
+                Forward => sqlx::query(
+                    "select * from store where tag = ?1 order by timestamp asc limit ?2",
+                )
+                .bind(self.tag.as_str())
+                .bind(self.limit as i64),
+                Backward => sqlx::query(
+                    "select * from store where tag = ?1 order by timestamp desc limit ?2",
+                )
+                .bind(self.tag.as_str())
+                .bind(self.limit as i64),
             },
         };
 
@@ -474,7 +473,7 @@ impl<'a> SqliteTagPager<'a> {
                 if res.is_empty() {
                     return None;
                 }
-                let last = res.last().unwrap().idx;
+                let last = res.last().unwrap().id;
                 self.last = Some(last);
 
                 Some(res)
