@@ -126,7 +126,7 @@ impl SqliteStore {
         Ok(res)
     }
 
-    fn paginate_tags(
+    fn paginate_tag(
         &self,
         tag: &str,
         limit: u64,
@@ -207,7 +207,7 @@ impl Store for SqliteStore {
     }
 
     fn pages_tag(&self, tag: &str, limit: u64) -> impl Stream<Item = Vec<Record<EncryptedData>>> {
-        self.paginate_tags(tag, limit, PagingDirection::Forward)
+        self.paginate_tag(tag, limit, PagingDirection::Forward)
     }
 
     fn pages_tag_rev(
@@ -215,7 +215,7 @@ impl Store for SqliteStore {
         tag: &str,
         limit: u64,
     ) -> impl Stream<Item = Vec<Record<EncryptedData>>> {
-        self.paginate_tags(tag, limit, PagingDirection::Backward)
+        self.paginate_tag(tag, limit, PagingDirection::Backward)
     }
 
     async fn len_all(&self) -> Result<u64> {
