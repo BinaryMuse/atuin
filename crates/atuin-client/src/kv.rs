@@ -314,6 +314,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn list() {
+        let mut store = SqliteStore::new(":memory:", test_local_timeout())
+            .await
+            .unwrap();
+
+        let kv = KvStore::new();
+        let key: [u8; 32] = XSalsa20Poly1305::generate_key(&mut OsRng).into();
+
+        let host_id = atuin_common::record::HostId(atuin_common::utils::uuid_v7());
+
+        kv.set(&mut store, &key, host_id, "test-kv", "foo", Some("bar"))
+            .await
+            .unwrap();
+
+        kv.set(&mut store, &key, host_id, "test-kv", "bar", Some("baz"))
+            .await
+            .unwrap();
+
+        kv.set(&mut store, &key, host_id, "test-kv", "baz", Some("qux"))
+            .await
+            .unwrap();
+
+        kv.set(&mut store, &key, host_id, "test-kv", "bar", None)
+            .await
+            .unwrap();
+
+        kv.set(&mut store, &key, host_id, "other-kv", "foo", Some("bar"))
+            .await
+            .unwrap();
+
+        let res = kv.list(&store, &key, "test-kv", false).await.unwrap();
+
+        assert_eq!(res.len(), 1);
+        assert_eq!(res.get("test-kv").unwrap().len(), 2);
+
+        let res = kv.list(&store, &key, "test-kv", true).await.unwrap();
+
+        assert_eq!(res.len(), 2);
+        assert_eq!(res.get("test-kv").unwrap().len(), 2);
+        assert_eq!(res.get("other-kv").unwrap().len(), 1);
+    }
+
+    #[tokio::test]
     async fn large_dataset() {
         let mut store = SqliteStore::new(":memory:", test_local_timeout())
             .await
