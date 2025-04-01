@@ -209,9 +209,15 @@ impl KvStore {
                 let kv = self.decrypt_record(encryption_key, record).await?;
 
                 if all_namespaces || kv.namespace == namespace {
-                    let ns = map
-                        .entry(kv.namespace.clone())
-                        .or_insert_with(BTreeMap::new);
+                    // Unrolling `entry` so we don't have to constantly clone the namespace
+                    // since there should be a lot fewer of them in relation to keys.
+                    let ns = match map.get_mut(&kv.namespace) {
+                        Some(ns) => ns,
+                        None => {
+                            map.insert(kv.namespace.clone(), BTreeMap::new());
+                            map.get_mut(&kv.namespace).unwrap()
+                        }
+                    };
 
                     if !ns.contains_key(&kv.key) {
                         ns.insert(kv.key.clone(), kv);
