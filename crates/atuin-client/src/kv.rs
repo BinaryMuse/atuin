@@ -176,7 +176,7 @@ impl KvStore {
         namespace: &str,
         key: &str,
     ) -> Result<Option<KvRecord>> {
-        let pages = store.pages_tag_rev(KV_TAG, 100).await;
+        let pages = store.pages_tag_rev(KV_TAG, 100);
         pin_mut!(pages);
 
         while let Some(page) = pages.next().await {
