@@ -95,7 +95,7 @@ impl SqliteStore {
         Ok(())
     }
 
-    pub fn query_row(row: SqliteRow) -> Record<EncryptedData> {
+    fn query_row(row: SqliteRow) -> Record<EncryptedData> {
         let idx: i64 = row.get("idx");
         let timestamp: i64 = row.get("timestamp");
 
