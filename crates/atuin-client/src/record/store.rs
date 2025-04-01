@@ -33,8 +33,8 @@ pub trait Store {
     async fn last(&self, host: HostId, tag: &str) -> Result<Option<Record<EncryptedData>>>;
     async fn first(&self, host: HostId, tag: &str) -> Result<Option<Record<EncryptedData>>>;
 
-    fn pages_tag(&self, tag: &str, limit: u64) -> impl Stream<Item = Vec<Record<EncryptedData>>>;
-    fn pages_tag_rev(
+    fn tag_pages(&self, tag: &str, limit: u64) -> impl Stream<Item = Vec<Record<EncryptedData>>>;
+    fn tag_pages_rev(
         &self,
         tag: &str,
         limit: u64,

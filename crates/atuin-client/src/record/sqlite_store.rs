@@ -206,11 +206,11 @@ impl Store for SqliteStore {
         self.idx(host, tag, 0).await
     }
 
-    fn pages_tag(&self, tag: &str, limit: u64) -> impl Stream<Item = Vec<Record<EncryptedData>>> {
+    fn tag_pages(&self, tag: &str, limit: u64) -> impl Stream<Item = Vec<Record<EncryptedData>>> {
         self.paginate_tag(tag, limit, PagingDirection::Forward)
     }
 
-    fn pages_tag_rev(
+    fn tag_pages_rev(
         &self,
         tag: &str,
         limit: u64,
@@ -604,7 +604,7 @@ mod tests {
             last_id = tail.id;
         }
 
-        let pages = db.pages_tag(tail.tag.as_str(), 10);
+        let pages = db.tag_pages(tail.tag.as_str(), 10);
         pin_mut!(pages);
 
         let pages = pages.collect::<Vec<_>>().await;
@@ -637,7 +637,7 @@ mod tests {
             last_id = tail.id;
         }
 
-        let pages = db.pages_tag_rev(tail.tag.as_str(), 10);
+        let pages = db.tag_pages_rev(tail.tag.as_str(), 10);
         pin_mut!(pages);
 
         let pages = pages.collect::<Vec<_>>().await;
