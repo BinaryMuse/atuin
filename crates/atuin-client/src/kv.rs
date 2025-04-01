@@ -180,7 +180,11 @@ impl KvStore {
         pin_mut!(pages);
 
         while let Some(page) = pages.next().await {
-            let map = self.build_kv_page(encryption_key, page).await?;
+            // Since we are paginating in reverse, SQLite gives us the entries
+            // in reverse order as well, so we need to reverse the iterator.
+            let map = self
+                .build_kv_page(encryption_key, page.into_iter().rev())
+                .await?;
 
             let res = map.get(namespace);
 
@@ -198,11 +202,11 @@ impl KvStore {
     pub async fn build_kv_page(
         &self,
         encryption_key: &[u8; 32],
-        page: Vec<Record<EncryptedData>>,
+        page: impl Iterator<Item = Record<EncryptedData>>,
     ) -> Result<BTreeMap<String, BTreeMap<String, KvRecord>>> {
         let mut map = BTreeMap::new();
 
-        for record in page.into_iter().rev() {
+        for record in page {
             let decrypted = match record.version.as_str() {
                 "v0" | KV_VERSION => record.decrypt::<PASETO_V4>(encryption_key)?,
                 version => bail!("unknown version {version:?}"),
